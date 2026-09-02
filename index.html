@@ -46,6 +46,10 @@ td.mono,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 footer{color:var(--muted);text-align:center;padding:22px;font-size:12px}
 .loading{padding:30px;text-align:center;color:var(--muted)}
 .note{background:rgba(247,162,51,.09);border:1px solid var(--accent);border-radius:8px;padding:8px 12px;margin:12px 0;font-size:12px}
+.pager{display:flex;gap:8px;margin-top:12px}
+.pager button{background:var(--card);border:1px solid var(--line);color:var(--ink);
+  border-radius:8px;padding:7px 14px;cursor:pointer;font:inherit;font-weight:600}
+.pager button:hover{border-color:var(--accent);color:var(--accent)}
 </style>
 </head>
 <body>
@@ -166,20 +170,54 @@ async function viewTx(id){
 }
 
 async function viewAddress(id){
-  app().innerHTML='<div class="loading">scanning address (this can take up to a minute — HTH has no address index)…</div>';
-  const a=await api('/api/address/'+id);
+  app().innerHTML='<div class="loading">loading address…</div>';
+  let a;
+  try { a = await api('/api/address/'+id); }
+  catch(e){
+    // Without this the page sits on "loading…" forever whenever the API
+    // hiccups (a restart, a cold index open, a dropped connection).
+    app().innerHTML='<div class="note">Could not load '+esc(id)+': '+esc(e.message||e)+
+      '. <a href="#" onclick="viewAddress(\''+esc(id)+'\');return false">Retry</a></div>';
+    return;
+  }
+  if(a.unknown){app().innerHTML='<div class="note">Nothing indexed for '+esc(id)+' yet. The indexer may not have reached it.</div>';return;}
+  const rank = a.rank ? '#'+a.rank.toLocaleString() : '—';
+  const share = a.share ? (a.share*100).toFixed(a.share*100 < 0.01 ? 6 : 4)+'%' : '—';
+  const produced = a.blocksProduced ? `<div class="row"><span class="k">Blocks produced</span><span class="v">${a.blocksProduced.toLocaleString()}</span></div>` : '';
   app().innerHTML=`
    <div class="card"><h2>Address</h2>
     <div class="kv">
      <div class="row"><span class="k">Address</span><span class="v mono">${esc(a.address)}</span></div>
      <div class="row"><span class="k">Balance</span><span class="v"><b>${fmt(a.balance)} HTH</b></span></div>
-     <div class="row"><span class="k">Unspent outputs</span><span class="v">${a.utxoCount.toLocaleString()}</span></div>
+     <div class="row"><span class="k">Rich list rank</span><span class="v">${rank} · ${share} of supply</span></div>
+     <div class="row"><span class="k">Total received</span><span class="v">${fmt(a.received)} HTH</span></div>
+     <div class="row"><span class="k">Total sent</span><span class="v">${fmt(a.sent)} HTH</span></div>
+     <div class="row"><span class="k">Transactions</span><span class="v">${(a.txCount||0).toLocaleString()}</span></div>
+     <div class="row"><span class="k">Active</span><span class="v">${a.firstHeight!=null?link('block',a.firstHeight,a.firstHeight):'—'} → ${a.lastHeight!=null?link('block',a.lastHeight,a.lastHeight):'—'}</span></div>
+     ${produced}
     </div></div>
-   ${a.utxoCount>a.utxos.length?`<div class="note">Showing the ${a.utxos.length} most recent of ${a.utxoCount.toLocaleString()} UTXOs.</div>`:''}
-   <div class="card"><h2>Unspent Outputs</h2><table>
-     <tr><th>Txid</th><th>Vout</th><th>Height</th><th class="right">Value</th></tr>
-     ${a.utxos.map(u=>`<tr><td>${link('tx',u.txid,short(u.txid,16))}</td><td>${u.vout}</td><td>${link('block',u.height,u.height)}</td><td class="right">${fmt(u.value)} HTH</td></tr>`).join('')||'<tr><td colspan="4" class="muted">no unspent outputs</td></tr>'}
-   </table></div>`;
+   <div class="card"><h2>Transactions</h2><div id="atx"><div class="loading">loading…</div></div></div>`;
+  loadAddrTxs(id, null);
+}
+
+async function loadAddrTxs(id, cursor){
+  const box=document.getElementById('atx'); if(!box)return;
+  const q='/api/address/'+id+'/txs?limit=50'+(cursor?'&cursor='+encodeURIComponent(cursor):'');
+  let d; try{ d=await api(q); }catch(e){ box.innerHTML='<div class="note">Could not load history.</div>'; return; }
+  if(!d.items||!d.items.length){ box.innerHTML='<div class="muted">No transactions indexed for this address yet.</div>'; return; }
+  box.innerHTML=`<table>
+     <tr><th>Txid</th><th>Height</th><th>When</th><th class="right">Amount</th></tr>
+     ${d.items.map(t=>`<tr>
+        <td>${link('tx',t.txid,short(t.txid,16))}</td>
+        <td>${link('block',t.height,t.height)}</td>
+        <td class="muted">${t.time?new Date(t.time*1000).toLocaleString():'—'}</td>
+        <td class="right" style="color:${t.delta>=0?'var(--good)':'inherit'}">${t.delta>=0?'+':''}${fmt(t.delta)} HTH</td>
+      </tr>`).join('')}
+   </table>
+   <div class="pager">
+     ${d.newer?`<button onclick="loadAddrTxs('${esc(id)}','${d.newer}')">← Newer</button>`:''}
+     ${d.older?`<button onclick="loadAddrTxs('${esc(id)}','${d.older}')">Older →</button>`:''}
+   </div>`;
 }
 
 async function router(){
